@@ -1,8 +1,0 @@
-# Ignore a directory named 'testfolder' anywhere in the project
-testfolder/
-
-# Optional: To ignore ALL files ending with '.log'
-*.log
-
-# Optional: To ignore Python cache directories
-__pycache__/

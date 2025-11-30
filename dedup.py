@@ -89,18 +89,22 @@ def discover_images(input_dir: Path) -> list[ImageRecord]:
 def extract_features(images: list[ImageRecord]):
     """Calculates pHash and BRISQUE scores for all images."""
     print("✨ Extracting features (pHash and BRISQUE)...")
+    
+    # Define a higher resolution for the hash (e.g., 16x16 = 256 bits)
+    HASH_RESOLUTION = 16 
+
     for i, record in enumerate(tqdm(images, desc="Feature Extraction")):
         try:
             img = Image.open(record.path)
-            # Calculate pHash (8x8 default)
-            record.pHash = imagehash.phash(img)
+            
+            # Calculate pHash with increased resolution (16x16)
+            record.pHash = imagehash.phash(img, hash_size=HASH_RESOLUTION) 
             
             # Calculate Quality Value (using actual BRISQUE)
             record.brisque_score = calculate_brisque_score(record.path)
 
-            # Close image file
             img.close()
-            
+                        
         except Exception as e:
             # We don't print the error here to avoid cluttering the progress bar.
             # You might want to log this to a file instead.
