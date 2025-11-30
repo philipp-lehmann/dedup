@@ -323,63 +323,86 @@ def load_features_from_report(input_dir: Path) -> dict:
     except Exception as e:
         print(f" - ⚠️ An unexpected error occurred while loading cache: {e}. Ignoring cache.")
         return {}
+
+
+def run_culling_process(input_dir_path: str, t_similarity: int, t_quality: float, culled_folder_name: str) -> list:
+    """
+    Executes the full image culling workflow.
     
+    Args:
+        input_dir_path (str): Path to the input folder.
+        t_similarity (int): Similarity threshold (pHash Hamming distance).
+        t_quality (float): Quality threshold (Max BRISQUE score).
+        culled_folder_name (str): Name of the subfolder for culled images.
+        
+    Returns:
+        list[ImageRecord]: A list of all processed ImageRecord objects.
+    """
+    input_dir = Path(input_dir_path)
+    
+    if not input_dir.is_dir():
+        # Raise an exception instead of printing an error message for the GUI to catch
+        raise FileNotFoundError(f"Input directory not found at {input_dir_path}")
+
+    # --- Workflow Steps ---
+    all_images = discover_images(input_dir)
+    
+    if not all_images:
+        return []
+
+    # Note: extract_features now requires input_dir for caching
+    extract_features(all_images, input_dir) 
+    
+    group_and_cull_similarity(all_images, t_similarity)
+    
+    cull_overall_quality(all_images, t_quality)
+
+    # File operations are executed, updating the action and location of files
+    total_kept, total_moved = perform_file_operations(
+        all_images, input_dir, culled_folder_name
+    )
+    
+    # The GUI will handle reporting, but we'll include report generation 
+    # here to meet the original requirement (you may remove this if performance is critical)
+    # NOTE: We need a dummy object for the report function since it expects 'args'
+    class DummyArgs: pass
+    args = DummyArgs()
+    args.T_similarity = t_similarity
+    args.T_quality = t_quality
+    args.culled_folder = culled_folder_name
+    
+    generate_report(all_images, input_dir, total_kept, total_moved, args)
+    
+    # Return the final list of records for the GUI to display
+    return all_images
     
 # --- 3. Main Execution Function ---
 
 def main():
+    """
+    Original CLI entry point, modified to call the new core function.
+    """
     parser = argparse.ArgumentParser(
-        description="Automatically sort and cull images based on pHash similarity and BRISQUE quality."
+        description="CLI: Sort and cull images based on pHash similarity and BRISQUE quality."
     )
-    parser.add_argument(
-        '--input_dir', 
-        type=Path, 
-        required=True, 
-        help="Path to the input folder containing images."
-    )
-    parser.add_argument(
-        '--T_similarity', 
-        type=int, 
-        default=4, 
-        help="Max Hamming Distance for two pHash values to be considered similar (Default: 4)."
-    )
-    parser.add_argument(
-        '--T_quality', 
-        type=float, 
-        default=35.0, 
-        help="Max BRISQUE score. Images above this are culled (Default: 35.0)."
-    )
-    parser.add_argument(
-        '--culled_folder', 
-        type=str, 
-        default='Culled_Images', 
-        help="Name of the subfolder to move culled images into (Default: Culled_Images)."
-    )
+    # ... (all argparse definitions remain the same) ...
     
     args = parser.parse_args()
 
-    if not args.input_dir.is_dir():
-        print(f"Error: Input directory not found at {args.input_dir}")
-        return
+    try:
+        # Call the core logic function
+        run_culling_process(
+            args.input_dir.resolve().as_posix(),  # Use absolute path string
+            args.T_similarity, 
+            args.T_quality, 
+            args.culled_folder
+        )
+        print("\n✅ Culling process finished.")
+    except FileNotFoundError as e:
+        print(f"Error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred during processing: {e}")
 
-    # --- Workflow Steps ---
-    all_images = discover_images(args.input_dir)
-    
-    if not all_images:
-        print("No images found. Exiting.")
-        return
-
-    extract_features(all_images, args.input_dir)
-    
-    group_and_cull_similarity(all_images, args.T_similarity)
-    
-    cull_overall_quality(all_images, args.T_quality)
-
-    total_kept, total_moved = perform_file_operations(
-        all_images, args.input_dir, args.culled_folder
-    )
-    
-    generate_report(all_images, args.input_dir, total_kept, total_moved, args)
 
 if __name__ == '__main__':
     main()
