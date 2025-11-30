@@ -86,34 +86,34 @@ def discover_images(input_dir: Path) -> list[ImageRecord]:
     print(f"Found {len(images)} potential image files.")
     return images
 
-def extract_features(images: list[ImageRecord], input_dir: Path): # <-- input_dir argument added!
+def extract_features(images: list[ImageRecord], input_dir: Path):
     """Calculates pHash and BRISQUE scores for all images, using cache if available."""
     print("✨ Extracting features (pHash and BRISQUE)...")
     
     # Define a higher resolution for the hash (e.g., 16x16 = 256 bits)
     HASH_RESOLUTION = 16 
-    
-    # Load existing features
-    cached_features = load_features_from_report(input_dir) 
+    CULLED_FOLDER = "Culled_Images" # Must match the GUI default (Hardcoded here for feature extraction)
+
+    # Load existing features: PASSING THE CULLED_FOLDER argument IS THE FIX
+    cached_features = load_features_from_report(input_dir, CULLED_FOLDER) 
 
     for record in tqdm(images, desc="Feature Extraction"):
         
-        # 1. Check if the image has a cached feature and if the file size/timestamp hasn't changed drastically (optional but safer)
-        # We will use the file name as the primary key for the cache check
         cache_key = record.path.name
         
         if cache_key in cached_features:
             cached_data = cached_features[cache_key]
             
-            # NOTE: For maximum robustness, you should also check if the hash size/resolution 
-            # used in the cache matches the current HASH_RESOLUTION.
-            # If the length of the cached pHash (converted to binary string) doesn't match HASH_RESOLUTION*HASH_RESOLUTION, 
-            # it should be recalculated.
-            
-            # Simple path to caching:
-            record.pHash = cached_data['pHash']
-            record.brisque_score = cached_data['brisque_score']
-            continue # Move to the next image
+            # If a record exists in cache, check if it's the right file (by checking if the file exists at the path we expect from the cache)
+            if 'current_path' in cached_data and cached_data['current_path'].exists():
+                # Use cached features
+                record.pHash = cached_data['pHash']
+                record.brisque_score = cached_data['brisque_score']
+                
+                # Correct the ImageRecord path
+                record.path = cached_data['current_path']
+                
+                continue
 
         # 2. If not cached or path is new/changed, calculate features
         try:
@@ -277,12 +277,14 @@ def generate_report(images: list[ImageRecord], input_dir: Path, total_kept: int,
     print(f"📝 Report saved to: {report_path}")
 
 
-def load_features_from_report(input_dir: Path) -> dict:
+def load_features_from_report(input_dir: Path, culled_folder_name: str) -> dict: # <-- Added culled_folder_name
     """
     Loads pHash and BRISQUE scores from the existing dedup_report.xml.
-    Returns a dictionary mapping absolute file paths to cached data.
+    Returns a dictionary mapping absolute file names to cached data,
+    updating the path based on the previous action.
     """
     report_path = input_dir / 'dedup_report.xml'
+    culled_dir = input_dir / culled_folder_name # Define the culled directory
     cached_features = {}
     
     if not report_path.exists():
@@ -293,25 +295,36 @@ def load_features_from_report(input_dir: Path) -> dict:
     try:
         tree = ET.parse(report_path)
         root = tree.getroot()
-        
-        # Check HASH_RESOLUTION from the old report configuration
-        # NOTE: This part assumes HASH_RESOLUTION is stored in the XML
-        # We need to ensure HASH_RESOLUTION is a global or passed value for a robust check.
-        # For now, we'll assume the path is the key and skip the check,
-        # but add a check for the current hash resolution requirement later.
 
         for img_el in root.findall('.//ImageDetails/Image'):
             path_str = img_el.find('Path').text
             phash_hex = img_el.find('pHash').text
             brisque_score_str = img_el.find('BRISQUEScore').text
+            action = img_el.find('Action').text # <-- READ THE ACTION
             
             # Only cache if both values are valid and available
             if path_str and phash_hex and brisque_score_str and brisque_score_str != 'N/A':
+                original_path = Path(path_str)
+                current_path = original_path
+
+                # FIX: Adjust path if the file was moved to the culled folder
+                # We check the action and assume the file is now in the culled directory.
+                if action == 'MOVE' or action == 'move':
+                    potential_culled_path = culled_dir / original_path.name
+                    if potential_culled_path.exists():
+                        current_path = potential_culled_path
+                
+                # We also check if the file was KEPT and moved back from a previous culled dir
+                elif action == 'KEEP' or action == 'keep':
+                    potential_kept_path = input_dir / original_path.name
+                    if potential_kept_path.exists():
+                        current_path = potential_kept_path
+                        
                 # Key the cache by the file's name (Path.name) for simple lookup
-                # since the path might change if images were moved to/from Culled_Images
-                cached_features[Path(path_str).name] = {
-                    'pHash': imagehash.hex_to_hash(phash_hex), # Convert hex string back to hash object
-                    'brisque_score': float(brisque_score_str)
+                cached_features[current_path.name] = {
+                    'pHash': imagehash.hex_to_hash(phash_hex), 
+                    'brisque_score': float(brisque_score_str),
+                    'current_path': current_path # <-- Store the CURRENT path
                 }
         
         print(f"   Loaded {len(cached_features)} feature records.")

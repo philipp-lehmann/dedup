@@ -162,28 +162,57 @@ class DedupApp(QMainWindow):
         self.worker.error.connect(self.handle_error)
         self.worker.start()
 
-    def create_thumbnail_widget(self, image_path: Path):
-        """Creates a QWidget containing an image thumbnail and its filename."""
+    def create_thumbnail_widget(self, image_path: Path, input_dir: Path, culled_folder_name: str): 
+        """
+        Creates a QWidget containing an image thumbnail and its filename, 
+        with a fallback check to the alternate location (culled/input).
+        """
         
-        # Define a consistent thumbnail size (e.g., 128x128 pixels)
         THUMB_SIZE = 128
         
+        # 1. Determine the actual file path with fallback
+        final_path = image_path
+        
+        # Check if the file exists at the path stored in the record
+        if not final_path.exists():
+            # If not found, check the alternate location based on the path's expected root
+            
+            culled_dir = input_dir / culled_folder_name
+            
+            # Scenario 1: File expected in root but is in culled folder
+            if final_path.parent == input_dir or final_path.parent.name == '': 
+                potential_path = culled_dir / final_path.name
+            
+            # Scenario 2: File expected in culled folder but is in root
+            elif final_path.parent == culled_dir:
+                potential_path = input_dir / final_path.name
+                
+            else: # Unhandled/nested directory structure, stick to the stored path
+                potential_path = None
+
+            if potential_path and potential_path.exists():
+                final_path = potential_path
+                
+            elif not final_path.exists():
+                # If still not found after fallback, we raise the error for the fallback widget
+                raise FileNotFoundError(f"Image not found at primary or fallback locations.")
+
+
         try:
-            # 1. Load and Resize using PIL/Pillow
-            img = PILImage.open(image_path)
+            # Use the confirmed final_path
+            img = PILImage.open(final_path) # <-- Use final_path here
             img.thumbnail((THUMB_SIZE, THUMB_SIZE)) # Resize in place, maintaining aspect ratio
             
             # 2. Convert PIL Image to QImage
             # Get image bytes
             data = img.tobytes("raw", img.mode)
             
-            # Create QImage
             qimage = QImage(
                 data, 
                 img.size[0], 
                 img.size[1], 
                 img.size[0] * len(img.getbands()),
-                QImage.Format.Format_RGB888 if img.mode == 'RGB' else QImage.Format.Format_Grayscale8 # Simplified format mapping
+                QImage.Format.Format_RGB888 if img.mode == 'RGB' else QImage.Format.Format_Grayscale8 
             )
 
             # 3. Create QPixmap for display
@@ -193,15 +222,14 @@ class DedupApp(QMainWindow):
             widget = QWidget()
             layout = QVBoxLayout(widget)
             
-            # Image Label
+            # Image Label and Filename Label logic remains the same
             image_label = QLabel()
             image_label.setPixmap(pixmap)
             image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             
-            # Filename Label
-            filename_label = QLabel(image_path.name)
+            filename_label = QLabel(final_path.name) # Use final_path.name
             filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            filename_label.setWordWrap(True) # Helps with long filenames
+            filename_label.setWordWrap(True)
 
             layout.addWidget(image_label)
             layout.addWidget(filename_label)
@@ -210,7 +238,7 @@ class DedupApp(QMainWindow):
             return widget
 
         except Exception as e:
-            # Fallback widget if image loading fails
+            # Fallback widget if image loading fails (including the FileNotFoundError raised above)
             widget = QWidget()
             layout = QVBoxLayout(widget)
             layout.addWidget(QLabel("🚫"))
@@ -222,6 +250,10 @@ class DedupApp(QMainWindow):
         self.run_button.setEnabled(True)
         self.run_button.setText("🏃 Run Culling")
         
+        # --- GET CURRENT FOLDER PATHS ---
+        current_input_dir = Path(self.input_path_edit.text())
+        CULLED_FOLDER_NAME = "Culled_Images" # Should match the default/constant used in dedup.py
+
         # 1. Clear previous results
         self._clear_grid(self.kept_grid.layout())
         self._clear_grid(self.culled_grid.layout())
@@ -236,16 +268,19 @@ class DedupApp(QMainWindow):
                 layout.addWidget(QLabel("No images in this category."), 0, 0)
                 return
 
-            # Simple grid population (4 columns)
             COLUMNS = 6 
             
             for index, record in enumerate(tqdm(image_list, desc="Loading Thumbnails", leave=False)):
                 row = index // COLUMNS
                 col = index % COLUMNS
                 
-                # Create the thumbnail widget
-                thumb_widget = self.create_thumbnail_widget(record.path)
-                
+                # Create the thumbnail widget, passing directory information
+                thumb_widget = self.create_thumbnail_widget(
+                    record.path, 
+                    current_input_dir, 
+                    CULLED_FOLDER_NAME
+                ) 
+
                 # Optionally add a tooltip with BRISQUE score and pHash
                 tooltip_text = (
                     f"File: {record.path.name}\n"
@@ -256,7 +291,6 @@ class DedupApp(QMainWindow):
                     tooltip_text += f"Reason: {record.move_reason}"
                     
                 thumb_widget.setToolTip(tooltip_text)
-
                 layout.addWidget(thumb_widget, row, col)
 
 
