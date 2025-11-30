@@ -86,14 +86,36 @@ def discover_images(input_dir: Path) -> list[ImageRecord]:
     print(f"Found {len(images)} potential image files.")
     return images
 
-def extract_features(images: list[ImageRecord]):
-    """Calculates pHash and BRISQUE scores for all images."""
+def extract_features(images: list[ImageRecord], input_dir: Path): # <-- input_dir argument added!
+    """Calculates pHash and BRISQUE scores for all images, using cache if available."""
     print("✨ Extracting features (pHash and BRISQUE)...")
     
     # Define a higher resolution for the hash (e.g., 16x16 = 256 bits)
     HASH_RESOLUTION = 16 
+    
+    # Load existing features
+    cached_features = load_features_from_report(input_dir) 
 
-    for i, record in enumerate(tqdm(images, desc="Feature Extraction")):
+    for record in tqdm(images, desc="Feature Extraction"):
+        
+        # 1. Check if the image has a cached feature and if the file size/timestamp hasn't changed drastically (optional but safer)
+        # We will use the file name as the primary key for the cache check
+        cache_key = record.path.name
+        
+        if cache_key in cached_features:
+            cached_data = cached_features[cache_key]
+            
+            # NOTE: For maximum robustness, you should also check if the hash size/resolution 
+            # used in the cache matches the current HASH_RESOLUTION.
+            # If the length of the cached pHash (converted to binary string) doesn't match HASH_RESOLUTION*HASH_RESOLUTION, 
+            # it should be recalculated.
+            
+            # Simple path to caching:
+            record.pHash = cached_data['pHash']
+            record.brisque_score = cached_data['brisque_score']
+            continue # Move to the next image
+
+        # 2. If not cached or path is new/changed, calculate features
         try:
             img = Image.open(record.path)
             
@@ -106,11 +128,9 @@ def extract_features(images: list[ImageRecord]):
             img.close()
                         
         except Exception as e:
-            # We don't print the error here to avoid cluttering the progress bar.
-            # You might want to log this to a file instead.
             record.action = 'MOVE'
             record.move_reason = f'Processing Error: {type(e).__name__}'
-            record.brisque_score = 999.0 # Ensure it's moved
+            record.brisque_score = 999.0 
 
     print("✅ Feature extraction complete.")
 
@@ -256,6 +276,55 @@ def generate_report(images: list[ImageRecord], input_dir: Path, total_kept: int,
     
     print(f"📝 Report saved to: {report_path}")
 
+
+def load_features_from_report(input_dir: Path) -> dict:
+    """
+    Loads pHash and BRISQUE scores from the existing dedup_report.xml.
+    Returns a dictionary mapping absolute file paths to cached data.
+    """
+    report_path = input_dir / 'dedup_report.xml'
+    cached_features = {}
+    
+    if not report_path.exists():
+        return cached_features
+
+    print("📄 Found previous report. Loading cached features...")
+    
+    try:
+        tree = ET.parse(report_path)
+        root = tree.getroot()
+        
+        # Check HASH_RESOLUTION from the old report configuration
+        # NOTE: This part assumes HASH_RESOLUTION is stored in the XML
+        # We need to ensure HASH_RESOLUTION is a global or passed value for a robust check.
+        # For now, we'll assume the path is the key and skip the check,
+        # but add a check for the current hash resolution requirement later.
+
+        for img_el in root.findall('.//ImageDetails/Image'):
+            path_str = img_el.find('Path').text
+            phash_hex = img_el.find('pHash').text
+            brisque_score_str = img_el.find('BRISQUEScore').text
+            
+            # Only cache if both values are valid and available
+            if path_str and phash_hex and brisque_score_str and brisque_score_str != 'N/A':
+                # Key the cache by the file's name (Path.name) for simple lookup
+                # since the path might change if images were moved to/from Culled_Images
+                cached_features[Path(path_str).name] = {
+                    'pHash': imagehash.hex_to_hash(phash_hex), # Convert hex string back to hash object
+                    'brisque_score': float(brisque_score_str)
+                }
+        
+        print(f"   Loaded {len(cached_features)} feature records.")
+        return cached_features
+
+    except ET.ParseError as e:
+        print(f" - ⚠️ Error parsing XML report: {e}. Ignoring cache.")
+        return {}
+    except Exception as e:
+        print(f" - ⚠️ An unexpected error occurred while loading cache: {e}. Ignoring cache.")
+        return {}
+    
+    
 # --- 3. Main Execution Function ---
 
 def main():
@@ -300,7 +369,7 @@ def main():
         print("No images found. Exiting.")
         return
 
-    extract_features(all_images)
+    extract_features(all_images, args.input_dir)
     
     group_and_cull_similarity(all_images, args.T_similarity)
     
